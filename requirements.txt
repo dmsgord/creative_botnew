@@ -1,6 +1,6 @@
 pyTelegramBotAPI
 pandas
-openpyxl
 requests
 python-dotenv
 python-calamine
+openpyxl
