@@ -8,6 +8,7 @@ import logging
 import threading
 from dotenv import load_dotenv
 from python_calamine import CalamineWorkbook 
+import mat_lib 
 
 # --- НАСТРОЙКИ ---
 load_dotenv()
@@ -16,17 +17,15 @@ YANDEX_LINK = os.getenv("YANDEX_LINK")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_FILE = os.path.join(BASE_DIR, "temp_data.xlsx")
-BAD_IMAGE_PATH = os.path.join(BASE_DIR, "img", "stop.jpg")
 
-# --- ИСПРАВЛЕНИЕ: Убрали encoding='utf-8' для Python 3.8 ---
-logging.basicConfig(
-    filename='bot_log.log', 
-    level=logging.INFO, 
-    format='%(asctime)s - %(message)s'
-)
+# ПУТИ К КАРТИНКАМ
+BAD_IMAGE_PATH = os.path.join(BASE_DIR, "img", "stop.jpg")         # Мат
+POLITICS_IMAGE_PATH = os.path.join(BASE_DIR, "img", "politics.jpg") # Политика
+ROBOT_IMAGE_PATH = os.path.join(BASE_DIR, "img", "robot.jpg")       # Взлом (НОВОЕ)
+
+logging.basicConfig(filename='bot_log.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Глобальные переменные
 data_lock = threading.Lock()
 df = None
 
@@ -37,94 +36,60 @@ MESSAGES = {
     "btn_back": "🔙 Назад",
     "search_header": "🔍 Нашел:",
     "search_empty": "🤷‍♂️ Ничего не нашел",
-    "cat_prefix": "Раздел: "
+    "cat_prefix": "Раздел: ",
+    "mat_detected": "🤬 Мат запрещен!",
+    "politics_detected": "⛔ Политика запрещена!",
+    "injection_detected": "🤖 Бип-буп! Я робот, твои трюки на мне не работают." # Текст для хакеров
 }
 
-# --- 1. СКАЧИВАНИЕ ФАЙЛА ---
+# --- СКАЧИВАНИЕ ---
 def download_file():
-    logger.info("📥 Скачиваю файл с Яндекса...")
     try:
         api_url = 'https://cloud-api.yandex.net/v1/disk/public/resources/download'
         resp = requests.get(api_url, params={'public_key': YANDEX_LINK})
-        if resp.status_code != 200:
-            logger.error(f"Ошибка API Яндекса: {resp.status_code}")
-            return False
-        
-        download_url = resp.json().get('href')
-        file_content = requests.get(download_url).content
+        if resp.status_code != 200: return False
         with open(TEMP_FILE, 'wb') as f:
-            f.write(file_content)
-        
-        logger.info("✅ Файл сохранен на диск.")
+            f.write(requests.get(resp.json().get('href')).content)
         return True
-    except Exception as e:
-        logger.error(f"🔥 Ошибка скачивания: {e}")
-        return False
+    except: return False
 
-# --- 2. ЧТЕНИЕ EXCEL (HADEZHNO) ---
+# --- ЧТЕНИЕ ---
 def load_data():
     global df, MESSAGES
-    
-    if not download_file():
-        return False
+    if not download_file(): return False
 
     try:
         wb = CalamineWorkbook.from_path(TEMP_FILE)
-        
         found_main = None
         found_settings = {}
 
         for sheet_name in wb.sheet_names:
             rows = wb.get_sheet_by_name(sheet_name).to_python()
             if not rows: continue
-
             headers = [str(h).strip() for h in rows[0]]
             temp_df = pd.DataFrame(rows[1:], columns=headers)
 
-            # Ищем лист "Карта"
-            if 'Направление' in headers:
-                logger.info(f"📄 Нашел базу данных на листе: {sheet_name}")
-                found_main = temp_df
-            
-            # Ищем лист "Настройки"
+            if 'Направление' in headers: found_main = temp_df
             elif 'Код' in headers and 'Текст' in headers:
-                logger.info(f"⚙️ Нашел настройки на листе: {sheet_name}")
                 for _, row in temp_df.iterrows():
                     key = str(row['Код']).strip()
                     val = str(row['Текст']).strip()
-                    if key and val and val != 'nan':
-                        found_settings[key] = val
+                    if key and val and val != 'nan': found_settings[key] = val
 
-        if found_main is None:
-            logger.error("❌ В файле нет листа с колонкой 'Направление'")
-            return False
+        if found_main is None: return False
 
         found_main['Направление'] = found_main['Направление'].astype(str)
         found_main['Название заявки'] = found_main['Название заявки'].fillna("")
-        
-        if 'Теги' not in found_main.columns: 
-            found_main['Теги'] = ""
-        
-        found_main['SearchIndex'] = (
-            found_main['Название заявки'].astype(str) + " " + 
-            found_main['Теги'].astype(str)
-        ).str.lower()
+        if 'Теги' not in found_main.columns: found_main['Теги'] = ""
+        found_main['SearchIndex'] = (found_main['Название заявки'].astype(str) + " " + found_main['Теги'].astype(str)).str.lower()
 
         with data_lock:
             df = found_main
-            if found_settings:
-                MESSAGES.update(found_settings)
-
-        logger.info(f"✅ УСПЕХ! Загружено {len(df)} строк.")
+            if found_settings: MESSAGES.update(found_settings)
         return True
+    except: return False
 
-    except Exception as e:
-        logger.exception(f"🔥 Ошибка чтения Excel: {e}")
-        return False
-
-# Грузим данные при старте
 load_data()
-
 bot = telebot.TeleBot(TOKEN)
 
 def main_kb():
@@ -133,7 +98,6 @@ def main_kb():
         if df is None or df.empty:
             kb.add(InlineKeyboardButton(MESSAGES['btn_upd'], callback_data="update"))
             return kb
-        
         cats = sorted(df['Направление'].unique())
         btns = [InlineKeyboardButton(c, callback_data=f"c|{c}") for c in cats if c != 'nan']
         kb.add(*btns)
@@ -142,21 +106,60 @@ def main_kb():
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    text = f"{MESSAGES['start_header']}\n{MESSAGES['start_sub']}"
-    bot.send_message(m.chat.id, text, reply_markup=main_kb())
+    bot.send_message(m.chat.id, f"{MESSAGES['start_header']}\n{MESSAGES['start_sub']}", reply_markup=main_kb())
 
 @bot.message_handler(commands=['upd'])
 def upd(m):
-    msg = bot.send_message(m.chat.id, "⏳ Скачиваю и обновляю...")
+    msg = bot.send_message(m.chat.id, "⏳ Обновляю...")
     if load_data():
-        bot.edit_message_text("✅ Готово! Меню обновлено.", m.chat.id, msg.message_id)
-        bot.send_message(m.chat.id, f"{MESSAGES['start_header']}", reply_markup=main_kb())
+        bot.delete_message(m.chat.id, msg.message_id)
+        bot.send_message(m.chat.id, "✅ Меню обновлено!", reply_markup=main_kb())
     else:
-        bot.edit_message_text("❌ Ошибка. Проверь логи.", m.chat.id, msg.message_id)
+        bot.edit_message_text("❌ Ошибка обновления.", m.chat.id, msg.message_id)
 
+# --- ОБРАБОТКА ТЕКСТА ---
 @bot.message_handler(content_types=['text'])
 def handle_text(m):
-    query = m.text.lower().strip()
+    user_text = m.text.strip()
+    
+    # ПРОВЕРКА ФИЛЬТРОВ
+    check_result = mat_lib.check_text(user_text)
+
+    # 1. ХАКЕРЫ / ИНЪЕКЦИИ
+    if check_result == 'injection':
+        if os.path.exists(ROBOT_IMAGE_PATH):
+            try:
+                with open(ROBOT_IMAGE_PATH, 'rb') as photo:
+                    bot.send_photo(m.chat.id, photo)
+                return
+            except: pass
+        bot.reply_to(m, MESSAGES['injection_detected'])
+        return
+
+    # 2. МАТ
+    if check_result == 'mat':
+        if os.path.exists(BAD_IMAGE_PATH):
+            try:
+                with open(BAD_IMAGE_PATH, 'rb') as photo:
+                    bot.send_photo(m.chat.id, photo)
+                return
+            except: pass
+        bot.reply_to(m, MESSAGES['mat_detected'])
+        return
+
+    # 3. ПОЛИТИКА
+    if check_result == 'politics':
+        if os.path.exists(POLITICS_IMAGE_PATH):
+            try:
+                with open(POLITICS_IMAGE_PATH, 'rb') as photo:
+                    bot.send_photo(m.chat.id, photo)
+                return
+            except: pass
+        bot.reply_to(m, MESSAGES['politics_detected'])
+        return
+
+    # ПОИСК
+    query = user_text.lower()
     if len(query) < 2: return
 
     with data_lock:
@@ -164,68 +167,49 @@ def handle_text(m):
         res = df[df['SearchIndex'].str.contains(query, na=False)].head(10)
 
     if res.empty:
-        bot.send_message(m.chat.id, MESSAGES['search_empty'], reply_markup=main_kb())
+        bot.send_message(m.chat.id, f"{MESSAGES['search_empty']}: {user_text}", reply_markup=main_kb())
         return
 
     kb = InlineKeyboardMarkup()
     for _, row in res.iterrows():
         name = row['Название заявки']
         link = str(row.get('Ссылка на заявку', ''))
-        
         btn_text = row.get('Текст кнопки', name)
         if pd.isna(btn_text) or btn_text == "": btn_text = name
 
-        if link.startswith('http'):
-            kb.add(InlineKeyboardButton(f"{btn_text} ↗️", url=link))
-        else:
-            kb.add(InlineKeyboardButton(f"ℹ️ {btn_text}", callback_data="no_link"))
+        if link.startswith('http'): kb.add(InlineKeyboardButton(f"{btn_text} ↗️", url=link))
+        else: kb.add(InlineKeyboardButton(f"ℹ️ {btn_text}", callback_data="no_link"))
     
     kb.add(InlineKeyboardButton(MESSAGES['btn_back'], callback_data="menu"))
-    bot.send_message(m.chat.id, f"{MESSAGES['search_header']}", reply_markup=kb)
+    bot.send_message(m.chat.id, MESSAGES['search_header'], reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: True)
 def callback(c):
     if c.data == "menu":
-        text = f"{MESSAGES['start_header']}\n{MESSAGES['start_sub']}"
-        bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=main_kb())
-    
+        bot.edit_message_text(f"{MESSAGES['start_header']}\n{MESSAGES['start_sub']}", c.message.chat.id, c.message.message_id, reply_markup=main_kb())
     elif c.data == "update":
         bot.answer_callback_query(c.id, "⏳ Обновляю...")
         if load_data():
-            bot.answer_callback_query(c.id, "✅ Успешно")
+            bot.answer_callback_query(c.id, "✅")
             try: bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=main_kb())
             except: pass
-        else:
-            bot.answer_callback_query(c.id, "❌ Ошибка")
-
+        else: bot.answer_callback_query(c.id, "❌ Ошибка")
     elif c.data.startswith("c|"):
-        category = c.data.split("|")[1]
-        with data_lock:
-            sub_df = df[df['Направление'] == category]
-        
+        cat = c.data.split("|")[1]
+        with data_lock: sub_df = df[df['Направление'] == cat]
         kb = InlineKeyboardMarkup()
         for _, row in sub_df.iterrows():
             name = row['Название заявки']
             link = str(row.get('Ссылка на заявку', ''))
-            
             btn_text = row.get('Текст кнопки', name)
             if pd.isna(btn_text) or btn_text == "": btn_text = name
-
-            if link.startswith('http'):
-                kb.add(InlineKeyboardButton(f"{btn_text} ↗️", url=link))
-            else:
-                kb.add(InlineKeyboardButton(f"ℹ️ {btn_text}", callback_data="no_link"))
-        
+            if link.startswith('http'): kb.add(InlineKeyboardButton(f"{btn_text} ↗️", url=link))
+            else: kb.add(InlineKeyboardButton(f"ℹ️ {btn_text}", callback_data="no_link"))
         kb.add(InlineKeyboardButton(MESSAGES['btn_back'], callback_data="menu"))
-        
-        prefix = MESSAGES.get('cat_prefix', 'Раздел: ')
-        bot.edit_message_text(f"{prefix} {category}", c.message.chat.id, c.message.message_id, reply_markup=kb)
-
+        bot.edit_message_text(f"{MESSAGES.get('cat_prefix', 'Раздел:')} {cat}", c.message.chat.id, c.message.message_id, reply_markup=kb)
     elif c.data == "no_link":
-        bot.answer_callback_query(c.id, "🔒 Доступ закрыт или ссылка не указана", show_alert=True)
+        bot.answer_callback_query(c.id, "🔒 Доступ закрыт", show_alert=True)
 
 while True:
-    try:
-        bot.infinity_polling(timeout=60, long_polling_timeout=60)
-    except Exception as e:
-        time.sleep(5)
+    try: bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    except: time.sleep(5)
