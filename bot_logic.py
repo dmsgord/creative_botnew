@@ -9,7 +9,6 @@ import threading
 import sys
 from dotenv import load_dotenv
 from python_calamine import CalamineWorkbook 
-import mat_lib 
 
 # --- НАСТРОЙКИ ---
 load_dotenv()
@@ -188,7 +187,7 @@ if not load_data():
     logger.error("⚠️ Первичная загрузка не удалась.")
     df = pd.DataFrame()
 
-# --- ИНТЕРФЕЙС (ИСПРАВЛЕННЫЙ) ---
+# --- ИНТЕРФЕЙС ---
 
 def main_kb():
     kb = InlineKeyboardMarkup(row_width=2)
@@ -197,26 +196,26 @@ def main_kb():
             kb.add(InlineKeyboardButton(MESSAGES['btn_upd'], callback_data="update"))
             return kb
         
-        # Получаем все категории
+        # Получаем категории
         cats = sorted(df['Направление'].unique())
         
-        # Разделяем на обычные и "Вопросы"
-        # Ищем категорию, в которой есть слово "вопрос" (регистронезависимо)
+        # Разделяем: обычные и "Вопросы"
         main_cats = []
         question_cats = []
         
         for c in cats:
             if str(c) == 'nan': continue
+            # Если в названии есть "вопрос" — в отдельный список
             if 'вопрос' in str(c).lower():
                 question_cats.append(c)
             else:
                 main_cats.append(c)
         
-        # 1. Сначала добавляем основные кнопки (сеткой по 2)
+        # 1. Сетка по 2 кнопки для основных
         btns = [InlineKeyboardButton(c, callback_data=f"c|{c}") for c in main_cats]
         kb.add(*btns)
         
-        # 2. Потом добавляем "Вопросы" (отдельной строкой внизу, во всю ширину)
+        # 2. "Вопросы" — отдельной кнопкой во всю ширину снизу
         for qc in question_cats:
             kb.add(InlineKeyboardButton(qc, callback_data=f"c|{qc}"))
             
@@ -283,6 +282,7 @@ def handle_text(m):
 def callback(c):
     try:
         if c.data == "menu":
+            bot.answer_callback_query(c.id) # <--- ВОТ ТУТ УБИРАЕМ ЗАГРУЗКУ
             text = f"{MESSAGES['start_header']}\n\n{MESSAGES['start_sub']}"
             bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=main_kb())
         
@@ -296,6 +296,7 @@ def callback(c):
                 bot.answer_callback_query(c.id, "❌")
         
         elif c.data.startswith("c|"):
+            bot.answer_callback_query(c.id) # <--- И ВОТ ТУТ ТОЖЕ
             cat = c.data.split("|")[1]
             with data_lock: 
                 if df is None or df.empty: return
