@@ -9,6 +9,7 @@ import threading
 import sys
 from dotenv import load_dotenv
 from python_calamine import CalamineWorkbook 
+import mat_lib 
 
 # --- НАСТРОЙКИ ---
 load_dotenv()
@@ -31,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- ИСПРАВЛЕНИЕ #2: Безопасный импорт фильтров ---
+# Безопасный импорт фильтров
 try:
     import mat_lib
     HAS_MAT_LIB = True
@@ -56,7 +57,7 @@ MESSAGES = {
     "injection_detected": "🤖 Бип-буп! Я робот, твои трюки на мне не работают."
 }
 
-# --- ИСПРАВЛЕНИЕ #1: Создаем бота СРАЗУ, до загрузки данных ---
+# --- ИНИЦИАЛИЗАЦИЯ ---
 if not TOKEN:
     logger.critical("⛔ TOKEN_CHIEF не найден в .env!")
     sys.exit(1)
@@ -66,7 +67,6 @@ bot = telebot.TeleBot(TOKEN)
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def safe_send_photo(chat_id, image_path, fallback_text):
-    """Безопасная отправка фото с обработкой ошибок API."""
     if os.path.exists(image_path):
         try:
             with open(image_path, 'rb') as photo:
@@ -74,16 +74,12 @@ def safe_send_photo(chat_id, image_path, fallback_text):
             return True
         except Exception as e:
             logger.error(f"Ошибка отправки фото: {e}")
-    
-    # Если фото нет или ошибка — шлем текст
     try:
         bot.send_message(chat_id, fallback_text)
-    except Exception as e:
-        logger.error(f"Ошибка отправки текста-заглушки: {e}")
+    except: pass
     return False
 
 def add_row_btn(kb, row):
-    """Создает кнопку для строки из Excel."""
     name = row['Название заявки']
     link = str(row.get('Ссылка на заявку', ''))
     btn_text = row.get('Текст кнопки', name)
@@ -187,12 +183,12 @@ def load_data():
         logger.exception(f"🔥 Критическая ошибка: {e}")
         return False
 
-# Первичная загрузка (безопасная)
+# Первичная загрузка
 if not load_data():
-    logger.error("⚠️ Первичная загрузка не удалась. Бот запустится с пустой базой.")
+    logger.error("⚠️ Первичная загрузка не удалась.")
     df = pd.DataFrame()
 
-# --- ИНТЕРФЕЙС ---
+# --- ИНТЕРФЕЙС (ИСПРАВЛЕННЫЙ) ---
 
 def main_kb():
     kb = InlineKeyboardMarkup(row_width=2)
@@ -200,9 +196,30 @@ def main_kb():
         if df is None or df.empty:
             kb.add(InlineKeyboardButton(MESSAGES['btn_upd'], callback_data="update"))
             return kb
+        
+        # Получаем все категории
         cats = sorted(df['Направление'].unique())
-        btns = [InlineKeyboardButton(c, callback_data=f"c|{c}") for c in cats if c != 'nan']
+        
+        # Разделяем на обычные и "Вопросы"
+        # Ищем категорию, в которой есть слово "вопрос" (регистронезависимо)
+        main_cats = []
+        question_cats = []
+        
+        for c in cats:
+            if str(c) == 'nan': continue
+            if 'вопрос' in str(c).lower():
+                question_cats.append(c)
+            else:
+                main_cats.append(c)
+        
+        # 1. Сначала добавляем основные кнопки (сеткой по 2)
+        btns = [InlineKeyboardButton(c, callback_data=f"c|{c}") for c in main_cats]
         kb.add(*btns)
+        
+        # 2. Потом добавляем "Вопросы" (отдельной строкой внизу, во всю ширину)
+        for qc in question_cats:
+            kb.add(InlineKeyboardButton(qc, callback_data=f"c|{qc}"))
+            
     return kb
 
 # --- ХЕНДЛЕРЫ ---
@@ -210,10 +227,8 @@ def main_kb():
 @bot.message_handler(commands=['start'])
 def start(m):
     text = f"{MESSAGES['start_header']}\n\n{MESSAGES['start_sub']}"
-    try:
-        bot.send_message(m.chat.id, text, reply_markup=main_kb())
-    except Exception as e:
-        logger.error(f"Ошибка отправки start: {e}")
+    try: bot.send_message(m.chat.id, text, reply_markup=main_kb())
+    except Exception as e: logger.error(f"Error start: {e}")
 
 @bot.message_handler(commands=['upd'])
 def upd(m):
@@ -221,21 +236,18 @@ def upd(m):
         msg = bot.send_message(m.chat.id, "⏳ Обновляю базу...")
         if load_data():
             bot.delete_message(m.chat.id, msg.message_id)
-            bot.send_message(m.chat.id, "✅ База успешно обновлена!", reply_markup=main_kb())
+            bot.send_message(m.chat.id, "✅ База обновлена!", reply_markup=main_kb())
         else:
-            bot.edit_message_text("❌ Ошибка обновления. См. логи.", m.chat.id, msg.message_id)
-    except Exception as e:
-        logger.error(f"Ошибка в upd: {e}")
+            bot.edit_message_text("❌ Ошибка обновления", m.chat.id, msg.message_id)
+    except Exception: pass
 
 @bot.message_handler(content_types=['text'])
 def handle_text(m):
     try:
         user_text = m.text.strip()
         
-        # 1. Проверка фильтров (только если модуль загружен)
         if HAS_MAT_LIB:
             check_result = mat_lib.check_text(user_text)
-
             if check_result == 'injection':
                 safe_send_photo(m.chat.id, ROBOT_IMAGE_PATH, MESSAGES['injection_detected'])
                 return
@@ -246,13 +258,11 @@ def handle_text(m):
                 safe_send_photo(m.chat.id, POLITICS_IMAGE_PATH, MESSAGES['politics_detected'])
                 return
 
-        # 2. Поиск
         query = user_text.lower()
         if len(query) < 2: return
 
         with data_lock:
             if df is None or df.empty: return
-            # Делаем копию, чтобы избежать Race Condition
             res = df[df['SearchIndex'].str.contains(query, na=False)].head(10).copy()
 
         if res.empty:
@@ -267,7 +277,7 @@ def handle_text(m):
         bot.send_message(m.chat.id, MESSAGES['search_header'], reply_markup=kb)
 
     except Exception as e:
-        logger.error(f"Ошибка в handle_text: {e}")
+        logger.error(f"Text error: {e}")
 
 @bot.callback_query_handler(func=lambda c: True)
 def callback(c):
@@ -277,23 +287,19 @@ def callback(c):
             bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=main_kb())
         
         elif c.data == "update":
-            bot.answer_callback_query(c.id, "⏳ Обновляю...")
+            bot.answer_callback_query(c.id, "⏳...")
             if load_data():
                 bot.answer_callback_query(c.id, "✅")
                 try: bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=main_kb())
                 except: pass
             else: 
-                bot.answer_callback_query(c.id, "❌ Ошибка")
+                bot.answer_callback_query(c.id, "❌")
         
         elif c.data.startswith("c|"):
             cat = c.data.split("|")[1]
-            
-            # ИСПРАВЛЕНИЕ #3: Безопасное чтение данных
             with data_lock: 
-                if df is None or df.empty:
-                    bot.answer_callback_query(c.id, "⚠️ База пуста")
-                    return
-                sub_df = df[df['Направление'] == cat].copy() # .copy() обязателен!
+                if df is None or df.empty: return
+                sub_df = df[df['Направление'] == cat].copy()
                 description = CAT_DESCRIPTIONS.get(cat, f"Раздел: {cat}")
 
             kb = InlineKeyboardMarkup()
@@ -309,12 +315,8 @@ def callback(c):
     except Exception as e:
         logger.error(f"Callback error: {e}")
 
-# --- ФУНКЦИЯ ЗАПУСКА (Обертка для systemd) ---
+# --- ФУНКЦИЯ ЗАПУСКА ---
 def run_bot(token=None, is_manager=True):
-    """
-    Эта функция запускает бота в вечном цикле с защитой от падений.
-    Параметры token и is_manager оставлены для совместимости, но берется TOKEN из global.
-    """
     retry_delay = 5
     while True:
         try:
