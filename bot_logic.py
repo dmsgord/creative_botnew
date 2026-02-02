@@ -51,6 +51,7 @@ MESSAGES = {
     "btn_back": "🔙 Назад к разделам",
     "search_header": "🔍 Нашел:",
     "search_empty": "🤷‍♂️ Ничего не нашел",
+    "search_short": "⚠️ Слишком короткий запрос. Введите хотя бы 2 буквы.",
     "mat_detected": "🤬 Мат запрещен!",
     "politics_detected": "⛔ Политика запрещена!",
     "injection_detected": "🤖 Бип-буп! Я робот, твои трюки на мне не работают."
@@ -196,26 +197,22 @@ def main_kb():
             kb.add(InlineKeyboardButton(MESSAGES['btn_upd'], callback_data="update"))
             return kb
         
-        # Получаем категории
         cats = sorted(df['Направление'].unique())
-        
-        # Разделяем: обычные и "Вопросы"
         main_cats = []
         question_cats = []
         
         for c in cats:
             if str(c) == 'nan': continue
-            # Если в названии есть "вопрос" — в отдельный список
             if 'вопрос' in str(c).lower():
                 question_cats.append(c)
             else:
                 main_cats.append(c)
         
-        # 1. Сетка по 2 кнопки для основных
+        # Основные - сеткой
         btns = [InlineKeyboardButton(c, callback_data=f"c|{c}") for c in main_cats]
         kb.add(*btns)
         
-        # 2. "Вопросы" — отдельной кнопкой во всю ширину снизу
+        # Вопросы - внизу во всю ширину
         for qc in question_cats:
             kb.add(InlineKeyboardButton(qc, callback_data=f"c|{qc}"))
             
@@ -258,7 +255,11 @@ def handle_text(m):
                 return
 
         query = user_text.lower()
-        if len(query) < 2: return
+        
+        # Ответ на короткий запрос
+        if len(query) < 2: 
+            bot.send_message(m.chat.id, MESSAGES.get('search_short', "⚠️ Слишком короткий запрос. Введите хотя бы 2 буквы."))
+            return
 
         with data_lock:
             if df is None or df.empty: return
@@ -282,21 +283,18 @@ def handle_text(m):
 def callback(c):
     try:
         if c.data == "menu":
-            bot.answer_callback_query(c.id) # <--- ВОТ ТУТ УБИРАЕМ ЗАГРУЗКУ
+            bot.answer_callback_query(c.id) # Сброс часиков
             text = f"{MESSAGES['start_header']}\n\n{MESSAGES['start_sub']}"
             bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=main_kb())
         
         elif c.data == "update":
-            bot.answer_callback_query(c.id, "⏳...")
+            bot.answer_callback_query(c.id, "⏳...") # Сброс с текстом
             if load_data():
-                bot.answer_callback_query(c.id, "✅")
                 try: bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=main_kb())
                 except: pass
-            else: 
-                bot.answer_callback_query(c.id, "❌")
         
         elif c.data.startswith("c|"):
-            bot.answer_callback_query(c.id) # <--- И ВОТ ТУТ ТОЖЕ
+            bot.answer_callback_query(c.id) # Сброс часиков
             cat = c.data.split("|")[1]
             with data_lock: 
                 if df is None or df.empty: return
@@ -311,7 +309,8 @@ def callback(c):
             bot.edit_message_text(description, c.message.chat.id, c.message.message_id, reply_markup=kb)
         
         elif c.data == "no_link":
-            bot.answer_callback_query(c.id, "🔒 Доступ закрыт", show_alert=True)
+            # Тут НЕ сбрасываем часики выше, а сразу даем алерт
+            bot.answer_callback_query(c.id, "🔒 Доступ закрыт / Нет ссылки", show_alert=True)
             
     except Exception as e:
         logger.error(f"Callback error: {e}")
