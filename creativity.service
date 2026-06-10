@@ -1,0 +1,15 @@
+[Unit]
+Description=Creativity Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/creative_botnew
+ExecStart=/root/creative_botnew/venv/bin/python run_chief.py
+Restart=always
+RestartSec=10
+# Сервер 1GB RAM: при превышении бот перезапустится, а не заморозит хост
+MemoryMax=250M
+
+[Install]
+WantedBy=multi-user.target
